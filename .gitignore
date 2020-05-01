@@ -1,2 +1,4 @@
 .vscode/
 poc.db
+files/large_old.csv
+files/large_new.csv

@@ -17,6 +17,16 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+// DiffType ...
+type DiffType string
+
+var (
+	// InDiffType ...
+	InDiffType DiffType = "+"
+	// OutDiffType ...
+	OutDiffType DiffType = "-"
+)
+
 func main() {
 	ctx := context.Background()
 
@@ -60,15 +70,15 @@ func main() {
 		log.Fatal(err)
 	}
 
-	inCh, outCh, err := diff(oldTblName, newTblName)
+	inCh, outCh, err := diff(db, oldTblName, newTblName)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	eg, _ = errgroup.WithContext(ctx)
 
-	eg.Go(func() error { return proccessDiff("+", inCh) })
-	eg.Go(func() error { return proccessDiff("-", outCh) })
+	eg.Go(func() error { return proccessDiff(InDiffType, inCh) })
+	eg.Go(func() error { return proccessDiff(OutDiffType, outCh) })
 
 	if err := eg.Wait(); err != nil {
 		log.Fatal(err)
@@ -77,8 +87,6 @@ func main() {
 	if err := os.Remove("./poc.db"); err != nil {
 		log.Fatal(err)
 	}
-
-	fmt.Println("Done")
 }
 
 func createTable(db *sql.DB, filepath, key string) (string, error) {
@@ -157,17 +165,59 @@ func keyIndex(key string, header []string) (int, error) {
 	return 0, errors.New("key not present in file header")
 }
 
-func diff(oldTblName, newTblName string) (chan []string, chan []string, error) {
-	inCh := make(chan []string)
-	outCh := make(chan []string)
+func diff(db *sql.DB, oldTblName, newTblName string) (chan string, chan string, error) {
+	inCh, err := handleDiffType(db, newTblName, oldTblName)
+	if err != nil {
+		return nil, nil, err
+	}
 
-	close(inCh)
-	close(outCh)
+	outCh, err := handleDiffType(db, oldTblName, newTblName)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	return inCh, outCh, nil
 }
 
-func proccessDiff(diffType string, rowsCh chan []string) error {
+func handleDiffType(db *sql.DB, baseTable, outerTable string) (chan string, error) {
+	ch := make(chan string)
+
+	tmpl := `
+		SELECT $$BASE$$.id, $$BASE$$.row
+		FROM $$BASE$$
+		LEFT JOIN $$OUTER$$ on $$BASE$$.id = $$OUTER$$.id
+		WHERE $$OUTER$$.id IS NULL
+	`
+	tmpl = strings.ReplaceAll(tmpl, "$$BASE$$", baseTable)
+	tmpl = strings.ReplaceAll(tmpl, "$$OUTER$$", outerTable)
+
+	rows, err := db.Query(tmpl)
+	if err != nil {
+		return nil, err
+	}
+
+	go func() {
+		for rows.Next() {
+			var id *string
+			var row *string
+
+			if err := rows.Scan(&id, &row); err != nil {
+				log.Fatal(err)
+			}
+
+			if row != nil {
+				ch <- *row
+			}
+		}
+
+		close(ch)
+		rows.Close()
+	}()
+
+	return ch, nil
+}
+
+func proccessDiff(diffType DiffType, rowsCh chan string) error {
 	for row := range rowsCh {
 		fmt.Printf("[%s] %s\n", diffType, row)
 	}

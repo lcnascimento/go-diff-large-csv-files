@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Pallinder/go-randomdata"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -50,14 +49,9 @@ func NewDiff(old, new, key string) *Diff {
 
 // Do ...
 func (d Diff) Do(ctx context.Context) error {
-	execID := randomdata.Alphanumeric(5)
-	dbFilename := fmt.Sprintf("./%s.db", execID)
-
-	fmt.Println("Starting diff with ID ", execID)
-
 	start := time.Now()
 
-	db, err := sql.Open("sqlite3", dbFilename)
+	db, err := sql.Open("sqlite3", "./diff.db")
 	if err != nil {
 		return err
 	}
@@ -67,11 +61,11 @@ func (d Diff) Do(ctx context.Context) error {
 
 	var oldTblName, newTblName string
 	eg.Go(func() (err error) {
-		oldTblName, err = createTable(db, execID, d.oldFilepath, d.key)
+		oldTblName, err = createTable(db, d.oldFilepath, d.key)
 		return err
 	})
 	eg.Go(func() (err error) {
-		newTblName, err = createTable(db, execID, d.newFilepath, d.key)
+		newTblName, err = createTable(db, d.newFilepath, d.key)
 		return err
 	})
 
@@ -79,7 +73,7 @@ func (d Diff) Do(ctx context.Context) error {
 		return err
 	}
 
-	fmt.Printf("[%s] Load Duration: %s\n", execID, time.Since(start).String())
+	fmt.Printf("Load Duration: %s\n", time.Since(start).String())
 	endLoad := time.Now()
 
 	inCh, outCh, err := diff(db, oldTblName, newTblName)
@@ -89,23 +83,24 @@ func (d Diff) Do(ctx context.Context) error {
 
 	eg, _ = errgroup.WithContext(ctx)
 
-	eg.Go(func() error { return proccessDiff(execID, InType, inCh) })
-	eg.Go(func() error { return proccessDiff(execID, OutType, outCh) })
+	diffID := fmt.Sprintf("%s_%s", oldTblName, newTblName)
+	eg.Go(func() error { return proccessDiff(diffID, InType, inCh) })
+	eg.Go(func() error { return proccessDiff(diffID, OutType, outCh) })
 
 	if err := eg.Wait(); err != nil {
 		return err
 	}
 
-	if err := os.Remove(dbFilename); err != nil {
+	if err := os.Remove("./diff.db"); err != nil {
 		return err
 	}
 
-	fmt.Printf("[%s] Diff Duration: %s\n", execID, time.Since(endLoad).String())
+	fmt.Printf("Diff Duration: %s\n", time.Since(endLoad).String())
 
 	return nil
 }
 
-func createTable(db *sql.DB, execID, filepath, key string) (string, error) {
+func createTable(db *sql.DB, filepath, key string) (string, error) {
 	f, err := os.Open(filepath)
 	if err != nil {
 		return "", err
@@ -120,8 +115,7 @@ func createTable(db *sql.DB, execID, filepath, key string) (string, error) {
 	tblName := strings.Replace(stat.Name(), ".csv", "", 1)
 
 	sql := `
-		CREATE TABLE IF NOT EXISTS $$TABLE_NAME$$ (id INTEGER PRIMARY KEY AUTOINCREMENT, key text, row text);
-		CREATE INDEX idx_$$TABLE_NAME$$_key ON $$TABLE_NAME$$ (key)
+		CREATE TABLE IF NOT EXISTS $$TABLE_NAME$$ (key TEXT NOT NULL PRIMARY KEY, row TEXT);
 	`
 	sql = strings.ReplaceAll(sql, "$$TABLE_NAME$$", tblName)
 
@@ -178,7 +172,7 @@ func bulkInsert(db *sql.DB, tblName string, bulk []*RowRecord, count int) error 
 		return nil
 	}
 
-	fmt.Printf("[%s] Progress: %d\n", tblName, count+1)
+	fmt.Printf("[%s] Load Progress: %d\n", tblName, count+1)
 
 	definitions := []string{}
 	for _, record := range bulk {
@@ -276,10 +270,18 @@ func proccessDiff(id string, diffType Type, rowsCh chan []string) error {
 
 	writer := csv.NewWriter(f)
 
+	count := 0
 	for row := range rowsCh {
 		writer.Write(row)
-		writer.Flush()
+
+		if count%100000 == 0 {
+			writer.Flush()
+			fmt.Printf("[%s][%s] Diff Progress: %d\n", id, diffType, count)
+		}
+		count++
 	}
+	writer.Flush()
+	fmt.Printf("[%s][%s] Diff Progress: %d\n", id, diffType, count)
 
 	return nil
 }

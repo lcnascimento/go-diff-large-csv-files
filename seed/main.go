@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"strconv"
 	"time"
@@ -19,7 +20,7 @@ func main() {
 
 	start := time.Now()
 
-	size := flag.Int("size", 10e5, "number of rows in large_files")
+	size := flag.Int("size", 10e6, "number of rows in large_files")
 
 	flag.Parse()
 
@@ -61,9 +62,14 @@ func newLargeFile(name string, size int) error {
 	}
 	writer.Flush()
 
+	offset := 0
+	if name == "new" {
+		offset = int(math.Abs(float64(size / 2)))
+	}
+
 	for i := 0; i < size; i++ {
 		values := []string{
-			strconv.FormatInt(int64(randomdata.Number(size)), 10),
+			strconv.FormatInt(int64(i+offset), 10),
 			randomdata.FullName(randomdata.RandomGender),
 			randomdata.Email(),
 			randomdata.PhoneNumber(),

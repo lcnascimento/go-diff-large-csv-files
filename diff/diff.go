@@ -144,7 +144,7 @@ func createTable(db *sql.DB, execID, filepath, key string) (string, error) {
 
 	buffer := []*RowRecord{}
 	count := 0
-	for {
+	for ; ; count++ {
 		row, err := reader.Read()
 		if err == io.EOF {
 			break
@@ -158,13 +158,12 @@ func createTable(db *sql.DB, execID, filepath, key string) (string, error) {
 			ID:  row[keyIdx],
 			Row: strings.Join(row, ","),
 		})
-		if len(buffer)%500 == 0 {
+		if len(buffer)%100000 == 0 {
 			if err := bulkInsert(db, tblName, buffer, count); err != nil {
 				return "", err
 			}
 			buffer = []*RowRecord{}
 		}
-		count++
 	}
 
 	if err := bulkInsert(db, tblName, buffer, count); err != nil {
@@ -179,7 +178,7 @@ func bulkInsert(db *sql.DB, tblName string, bulk []*RowRecord, count int) error 
 		return nil
 	}
 
-	fmt.Printf("[%s] Progress: %d\n", tblName, count)
+	fmt.Printf("[%s] Progress: %d\n", tblName, count+1)
 
 	definitions := []string{}
 	for _, record := range bulk {

@@ -19,7 +19,7 @@ func main() {
 
 	start := time.Now()
 
-	size := flag.Int("size", 10e6, "number of rows in large_files")
+	size := flag.Int("size", 10e5, "number of rows in large_files")
 
 	flag.Parse()
 

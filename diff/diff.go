@@ -10,18 +10,26 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/Pallinder/go-randomdata"
 	"golang.org/x/sync/errgroup"
 )
 
-// DiffType ...
-type DiffType string
+// Type ...
+type Type string
+
+// RowRecord ...
+type RowRecord struct {
+	ID  string
+	Row string
+}
 
 var (
-	// InDiffType ...
-	InDiffType DiffType = "+"
-	// OutDiffType ...
-	OutDiffType DiffType = "-"
+	// InType ...
+	InType Type = "+"
+	// OutType ...
+	OutType Type = "-"
 )
 
 // Diff ...
@@ -41,10 +49,17 @@ func NewDiff(old, new, key string) *Diff {
 }
 
 // Do ...
-func (d Diff) Do(ctx context.Context) {
-	db, err := sql.Open("sqlite3", "./poc.db")
+func (d Diff) Do(ctx context.Context) error {
+	execID := randomdata.Alphanumeric(5)
+	dbFilename := fmt.Sprintf("./%s.db", execID)
+
+	fmt.Println("Starting diff with ID ", execID)
+
+	start := time.Now()
+
+	db, err := sql.Open("sqlite3", dbFilename)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	defer db.Close()
 
@@ -52,38 +67,45 @@ func (d Diff) Do(ctx context.Context) {
 
 	var oldTblName, newTblName string
 	eg.Go(func() (err error) {
-		oldTblName, err = createTable(db, d.oldFilepath, d.key)
+		oldTblName, err = createTable(db, execID, d.oldFilepath, d.key)
 		return err
 	})
 	eg.Go(func() (err error) {
-		newTblName, err = createTable(db, d.newFilepath, d.key)
+		newTblName, err = createTable(db, execID, d.newFilepath, d.key)
 		return err
 	})
 
 	if err := eg.Wait(); err != nil {
-		log.Fatal(err)
+		return err
 	}
+
+	fmt.Printf("[%s] Load Duration: %s\n", execID, time.Since(start).String())
+	endLoad := time.Now()
 
 	inCh, outCh, err := diff(db, oldTblName, newTblName)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	eg, _ = errgroup.WithContext(ctx)
 
-	eg.Go(func() error { return proccessDiff(InDiffType, inCh) })
-	eg.Go(func() error { return proccessDiff(OutDiffType, outCh) })
+	eg.Go(func() error { return proccessDiff(execID, InType, inCh) })
+	eg.Go(func() error { return proccessDiff(execID, OutType, outCh) })
 
 	if err := eg.Wait(); err != nil {
-		log.Fatal(err)
+		return err
 	}
 
-	if err := os.Remove("./poc.db"); err != nil {
-		log.Fatal(err)
+	if err := os.Remove(dbFilename); err != nil {
+		return err
 	}
+
+	fmt.Printf("[%s] Diff Duration: %s\n", execID, time.Since(endLoad).String())
+
+	return nil
 }
 
-func createTable(db *sql.DB, filepath, key string) (string, error) {
+func createTable(db *sql.DB, execID, filepath, key string) (string, error) {
 	f, err := os.Open(filepath)
 	if err != nil {
 		return "", err
@@ -96,23 +118,17 @@ func createTable(db *sql.DB, filepath, key string) (string, error) {
 	}
 
 	tblName := strings.Replace(stat.Name(), ".csv", "", 1)
-	sql := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (id text not null primary key, row text);", tblName)
+
+	sql := `
+		CREATE TABLE IF NOT EXISTS $$TABLE_NAME$$ (id INTEGER PRIMARY KEY AUTOINCREMENT, key text, row text);
+		CREATE INDEX idx_$$TABLE_NAME$$_key ON $$TABLE_NAME$$ (key)
+	`
+	sql = strings.ReplaceAll(sql, "$$TABLE_NAME$$", tblName)
 
 	_, err = db.Exec(sql)
 	if err != nil {
 		return "", err
 	}
-
-	tx, err := db.Begin()
-	if err != nil {
-		return "", err
-	}
-
-	stmt, err := tx.Prepare(fmt.Sprintf("INSERT INTO %s(id, row) VALUES(?, ?)", tblName))
-	if err != nil {
-		return "", err
-	}
-	defer stmt.Close()
 
 	reader := csv.NewReader(f)
 
@@ -126,6 +142,8 @@ func createTable(db *sql.DB, filepath, key string) (string, error) {
 		return "", err
 	}
 
+	buffer := []*RowRecord{}
+	count := 0
 	for {
 		row, err := reader.Read()
 		if err == io.EOF {
@@ -136,17 +154,46 @@ func createTable(db *sql.DB, filepath, key string) (string, error) {
 			return "", err
 		}
 
-		_, err = stmt.Exec(row[keyIdx], strings.Join(row, ";"))
-		if err != nil {
-			return "", err
+		buffer = append(buffer, &RowRecord{
+			ID:  row[keyIdx],
+			Row: strings.Join(row, ","),
+		})
+		if len(buffer)%500 == 0 {
+			if err := bulkInsert(db, tblName, buffer, count); err != nil {
+				return "", err
+			}
+			buffer = []*RowRecord{}
 		}
+		count++
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := bulkInsert(db, tblName, buffer, count); err != nil {
 		return "", err
 	}
 
 	return tblName, nil
+}
+
+func bulkInsert(db *sql.DB, tblName string, bulk []*RowRecord, count int) error {
+	if len(bulk) == 0 {
+		return nil
+	}
+
+	fmt.Printf("[%s] Progress: %d\n", tblName, count)
+
+	definitions := []string{}
+	for _, record := range bulk {
+		definitions = append(definitions, fmt.Sprintf("('%s', '%s')", record.ID, record.Row))
+	}
+
+	query := fmt.Sprintf("INSERT INTO %s(key, row) VALUES %s", tblName, strings.Join(definitions, ","))
+
+	_, err := db.Exec(query)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func keyIndex(key string, header []string) (int, error) {
@@ -159,7 +206,7 @@ func keyIndex(key string, header []string) (int, error) {
 	return 0, errors.New("key not present in file header")
 }
 
-func diff(db *sql.DB, oldTblName, newTblName string) (chan string, chan string, error) {
+func diff(db *sql.DB, oldTblName, newTblName string) (chan []string, chan []string, error) {
 	inCh, err := handleDiffType(db, newTblName, oldTblName)
 	if err != nil {
 		return nil, nil, err
@@ -173,14 +220,15 @@ func diff(db *sql.DB, oldTblName, newTblName string) (chan string, chan string, 
 	return inCh, outCh, nil
 }
 
-func handleDiffType(db *sql.DB, baseTable, outerTable string) (chan string, error) {
-	ch := make(chan string)
+func handleDiffType(db *sql.DB, baseTable, outerTable string) (chan []string, error) {
+	ch := make(chan []string)
 
 	tmpl := `
-		SELECT $$BASE$$.id, $$BASE$$.row
+		SELECT $$BASE$$.key, $$BASE$$.row
 		FROM $$BASE$$
-		LEFT JOIN $$OUTER$$ on $$BASE$$.id = $$OUTER$$.id
-		WHERE $$OUTER$$.id IS NULL
+		LEFT JOIN $$OUTER$$ on $$BASE$$.key = $$OUTER$$.key
+		WHERE $$OUTER$$.key IS NULL
+		GROUP BY $$BASE$$.key, $$BASE$$.row
 	`
 	tmpl = strings.ReplaceAll(tmpl, "$$BASE$$", baseTable)
 	tmpl = strings.ReplaceAll(tmpl, "$$OUTER$$", outerTable)
@@ -200,7 +248,7 @@ func handleDiffType(db *sql.DB, baseTable, outerTable string) (chan string, erro
 			}
 
 			if row != nil {
-				ch <- *row
+				ch <- strings.Split(*row, ",")
 			}
 		}
 
@@ -211,9 +259,27 @@ func handleDiffType(db *sql.DB, baseTable, outerTable string) (chan string, erro
 	return ch, nil
 }
 
-func proccessDiff(diffType DiffType, rowsCh chan string) error {
+func proccessDiff(id string, diffType Type, rowsCh chan []string) error {
+	filename := "in.csv"
+	if diffType == OutType {
+		filename = "out.csv"
+	}
+
+	folderPath := fmt.Sprintf("./output/%s", id)
+	if _, err := os.Stat(folderPath); os.IsNotExist(err) {
+		os.MkdirAll(folderPath, 0700)
+	}
+
+	f, err := os.Create(fmt.Sprintf("./output/%s/%s", id, filename))
+	if err != nil {
+		return err
+	}
+
+	writer := csv.NewWriter(f)
+
 	for row := range rowsCh {
-		fmt.Printf("[%s] %s\n", diffType, row)
+		writer.Write(row)
+		writer.Flush()
 	}
 
 	return nil

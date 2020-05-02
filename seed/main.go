@@ -61,7 +61,6 @@ func newLargeFile(name string, size int) error {
 	}
 	writer.Flush()
 
-	buffer := [][]string{}
 	for i := 0; i < size; i++ {
 		values := []string{
 			strconv.FormatInt(int64(randomdata.Number(size)), 10),
@@ -72,22 +71,15 @@ func newLargeFile(name string, size int) error {
 			randomdata.Country(randomdata.FullCountry),
 		}
 
-		buffer = append(buffer, values)
-
-		if len(buffer)%500 == 0 {
-			if err := writer.WriteAll(buffer); err != nil {
-				return err
-			}
-
-			buffer = [][]string{}
-		}
-	}
-
-	if len(buffer) > 0 {
-		if err := writer.WriteAll(buffer); err != nil {
+		if err := writer.Write(values); err != nil {
 			return err
 		}
+
+		if i%500 == 0 {
+			writer.Flush()
+		}
 	}
+	writer.Flush()
 
 	return nil
 }

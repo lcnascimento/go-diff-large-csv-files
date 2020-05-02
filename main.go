@@ -30,5 +30,7 @@ func main() {
 	}
 
 	diff := diff.NewDiff(*oldPath, *newPath, *key)
-	diff.Do(context.Background())
+	if err := diff.Do(context.Background()); err != nil {
+		log.Fatal(err)
+	}
 }

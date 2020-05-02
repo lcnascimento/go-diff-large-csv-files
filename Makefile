@@ -1,5 +1,8 @@
-@:
-	go run main.go -old=./files/old.csv -new=./files/new.csv -key=reference
+tiny:
+	go run main.go -old=./files/tiny_old.csv -new=./files/tiny_new.csv -key=reference
+
+large:
+	go run main.go -old=./files/large_old.csv -new=./files/large_new.csv -key=reference
 
 seeds:
 	@ echo

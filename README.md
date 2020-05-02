@@ -1,10 +1,10 @@
 Go Diff Large Files
 ----
 
-Produce large files: `make seeds`
-Diff for tiny files: `make tiny`
-Diff for large files: `make large`
-Run benchmarks: `make benchmarks`
+- Produce large files: `make seeds`
+- Diff for tiny files: `make tiny`
+- Diff for large files: `make large`
+- Run benchmarks: `make benchmarks`
 
 Results of diff should be found at `outputs/<EXECUTION_ID>/`
 
